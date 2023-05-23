@@ -1,10 +1,55 @@
 const db = require('../database/db');
 const logController = require('./log.controller');
 
+/**
+ * Функция приводящая библиотеки к нужному формату
+ * @param {array} arr - список библиотек 
+ * @returns {array}
+ */
+const getFormattedArray = (arr) => {
+  const result = [];
+
+  arr.forEach((lib) => {
+    try {
+      let itemIndex = result.findIndex((item) => item.name === lib.name);
+      
+      if(itemIndex === -1) {
+        result.push({ id: lib.id, name: lib.name, versions: [{ version: lib.version, dependencies: [] }] });
+        itemIndex = result.length - 1;
+      } else {
+        const item = result[itemIndex];
+        const versionIndex = item.versions.findIndex((version) => version.version === lib.version);
+        if(versionIndex === -1) {
+          item.versions.push({ version: lib.version, dependencies: [] });
+        }
+      }
+      
+      if(lib.dependlib && lib.dependversion) {
+        const item = result[itemIndex];
+        const versionIndex = item.versions.findIndex((version) => version.version === lib.version);
+        item.versions[versionIndex].dependencies.push({ name: lib.dependlib, version: lib.dependversion });
+      }
+    } catch(err) {
+      console.log(err);
+    }
+  });
+
+  // Сортируем версии библиотеки
+  result.forEach((item) => item.versions.sort((a, b) => {
+    if (a.version > b.version) return 1
+    else if (a.version < b.version) return -1
+    return 0
+  }));
+
+  return result;
+}
+
 class LibrariesController {
   async createLibrary(req, res) {
     try {
       const { name, versions } = req.body;
+
+      // Добавляем библиотеку в базу
       const { rows } = await db.query(
         'INSERT INTO libraries (name, create_time, update_time) values ($1, now()::timestamp, now()::timestamp) RETURNING id',
         [name],
@@ -12,6 +57,7 @@ class LibrariesController {
 
       const { id } = rows[0];
 
+      // Добавляем версию и её зависимости в базу
       versions.forEach(async (version) => {
         const result = await db.query('INSERT INTO versions (libraryid, create_time, version) VALUES ($1, now()::timestamp, $2) RETURNING id',
           [id, version.version],
@@ -29,6 +75,7 @@ class LibrariesController {
         })
       });
 
+      // Логгируем действие
       await logController.createLog(`Create new library - ${name}`);
 
       res.status(201).send(`Library created!`);
@@ -41,6 +88,7 @@ class LibrariesController {
   async editLibrary(req, res) {
     const { name, versions } = req.body;
 
+    // Получаем старые версии и их зависимости для дальнейшего сравнения изменений
     const { rows } = await db.query(`
     SELECT id as versionid, libraryid, vers.version,
       dep.iddependlibrary,
@@ -53,6 +101,7 @@ class LibrariesController {
     `, [name]);
   
     
+    // Проверяем была ли удалена версия и её зависимости из библиотеки
     rows.forEach(async (dep) => {
       const versionIndex = versions.findIndex((version) => version.version === dep.version);
       
@@ -69,6 +118,8 @@ class LibrariesController {
               `DELETE FROM dependencies WHERE idlibrary = $1 AND iddependlibrary = $2 AND idversionlib = $3 AND idversiondependlib = $4`, 
               [dep.libraryid, dep.iddependlibrary, dep.versionid, dep.idversiondependlib]
             );
+
+            // Логгируем действие
             await logController.createLog(`Delete dependencie - ${name} ${dep.version}: ${dep.depname} - ${dep.depversion}`);
           }
         }
@@ -76,7 +127,7 @@ class LibrariesController {
     });
 
 
-    // Приводим к нужному формату для дальнейшего сравнения
+    // Приводим записанные в базе версии к нужному формату для дальнейшего сравнения
     const correctRows = [];
 
     rows.forEach((row) => {
@@ -91,14 +142,17 @@ class LibrariesController {
       }
     })
 
+    // Обрабатываем изменения версий
     versions.forEach(async (version) => {
       const rowIndex = correctRows.findIndex((row) => row.version === version.version);
       const libraryId = rows[0].libraryid;
 
+      // Добавляем новую версию и её зависимости в базу
       if (rowIndex === -1) {
         const result = await db.query('INSERT INTO versions (libraryid, create_time, version) VALUES ($1, now()::timestamp, $2) RETURNING id',
           [libraryId, version.version],
         );
+        // Логгируем действие
         await logController.createLog(`Create ${name} new version - ${version.version}`);
 
         const versionId = result.rows[0].id;
@@ -115,8 +169,8 @@ class LibrariesController {
           await logController.createLog(`Add new dependencie to ${name}:${version.version} - ${depend.name}:${depend.version}`);
         });
 
-
       } else {
+        // Добавляем к уже имеющейся версии зависимости
         const newDependencies = [];
         if (version.dependencies.toString() !== correctRows[rowIndex].dependencies.toString()) {
           version.dependencies.forEach((dep) => {
@@ -135,13 +189,13 @@ class LibrariesController {
                   (SELECT id FROM libraries WHERE name = $5)::integer AND version = $6))`,
               [libraryId, depend.name, name, version.version, depend.name, depend.version]
             );
-
+            // Логгируем действие
             await logController.createLog(`Add new dependencie to ${name}:${version.version} - ${depend.name}:${depend.version}`);
           })
         }
       }
     });
-
+    // Логгируем действие
     await logController.createLog(`Edit library - ${name}`);
     res.status(200).send(`${name} edited!`);
   }
@@ -161,42 +215,8 @@ class LibrariesController {
         ORDER BY id
         `,
       );
-      const result = [];
+      const result = getFormattedArray(rows);
 
-      rows.forEach((lib) => {
-        try {
-          let itemIndex = result.findIndex((item) => item.name === lib.name);
-          
-          if(itemIndex === -1) {
-            result.push({ id: lib.id, name: lib.name, versions: [{ version: lib.version, dependencies: [] }] });
-            itemIndex = result.length - 1;
-          } else {
-            const item = result[itemIndex];
-            const versionIndex = item.versions.findIndex((version) => version.version === lib.version);
-            if(versionIndex === -1) {
-              item.versions.push({ version: lib.version, dependencies: [] });
-            }
-          }
-          
-
-          if(lib.dependlib && lib.dependversion) {
-            const item = result[itemIndex];
-            const versionIndex = item.versions.findIndex((version) => version.version === lib.version);
-            item.versions[versionIndex].dependencies.push({ name: lib.dependlib, version: lib.dependversion });
-          }
-        } catch(err) {
-          console.log(err);
-        }
-      });
-
-      result.forEach((item) => item.versions.sort((a, b) => {
-        if (a.version > b.version) return 1
-        else if (a.version < b.version) return -1
-        return 0
-      }));
-
-
-      
       res.status(200).send(result);
     } catch(err) {
       res.status(400).send(err);
@@ -219,40 +239,7 @@ class LibrariesController {
         `,
         [name],
       );
-
-      const result = [];
-
-      rows.forEach((lib) => {
-        try {
-          let itemIndex = result.findIndex((item) => item.name === lib.name);
-          
-          if(itemIndex === -1) {
-            result.push({ name: lib.name, versions: [{ version: lib.version, dependencies: [] }] });
-            itemIndex = result.length - 1;
-          } else {
-            const item = result[itemIndex];
-            const versionIndex = item.versions.findIndex((version) => version.version === lib.version);
-            if(versionIndex === -1) {
-              item.versions.push({ version: lib.version, dependencies: [] });
-            }
-          }
-          
-
-          if(lib.dependlib && lib.dependversion) {
-            const item = result[itemIndex];
-            const versionIndex = item.versions.findIndex((version) => version.version === lib.version);
-            item.versions[versionIndex].dependencies.push({ name: lib.dependlib, version: lib.dependversion });
-          }
-        } catch(err) {
-          console.log(err);
-        }
-      });
-
-      result.forEach((item) => item.versions.sort((a, b) => {
-        if (a.version > b.version) return 1
-        else if (a.version < b.version) return -1
-        return 0
-      }));
+      const result = getFormattedArray(rows);
 
       res.status(200).send(result[0]);
     } catch(err) {

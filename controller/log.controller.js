@@ -6,6 +6,10 @@ class LogController {
     res.status(200).send(rows);
   }
 
+  /**
+   * Создание лога в таблице log
+   * @param {string} action - действие которое хотим сохранить в базу
+   */
   async createLog(action) {
     await db.query('INSERT INTO log (create_time, action) values (now()::timestamp, $1)', [action]);
   }
