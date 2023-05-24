@@ -2,7 +2,12 @@ const db = require('../database/db');
 
 class LogController {
   async getLogs(req, res) {
-    const { rows } = await db.query('SELECT * FROM log');
+    const { page } = req.query;
+    const offset = parseInt(page) > 1 ? (page - 1) * 10 : 0;
+    const { rows } = await db.query(
+      'SELECT *, (SELECT count(*) FROM log) as total FROM log OFFSET $1 LIMIT 10',
+      [offset],
+    );
     res.status(200).send(rows);
   }
 

@@ -202,22 +202,28 @@ class LibrariesController {
 
   async getLibraries(req, res) {
     try {
+      const { page } = req.query;
+      const offset = page > 1 ? (page - 1) * 10 : 0;
       const { rows } = await db.query(
         `SELECT
           lib.id,
           name,
           vers.version,
           (SELECT name FROM libraries WHERE id = dep.iddependlibrary) as dependlib,
-          (SELECT version FROM versions WHERE id = dep.idversiondependlib) as dependversion
+          (SELECT version FROM versions WHERE id = dep.idversiondependlib) as dependversion,
+          (SELECT count(id) FROM libraries) as total
         FROM libraries as lib
         JOIN versions as vers ON vers.libraryid = lib.id
         LEFT JOIN dependencies as dep ON dep.idlibrary = lib.id and dep.idversionlib = vers.id
         ORDER BY id
+        OFFSET $1 LIMIT 10
         `,
+        [offset],
       );
+      const total = rows[0].total;
       const result = getFormattedArray(rows);
 
-      res.status(200).send(result);
+      res.status(200).send({ data: result, total });
     } catch(err) {
       res.status(400).send(err);
     }
