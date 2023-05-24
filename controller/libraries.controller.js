@@ -96,8 +96,12 @@ class LibrariesController {
 
       res.status(201).send(`Library created!`);
     } catch(err) {
-      console.log(err);
-      res.status(400).send(err);
+      if (err.code === '23505') {
+        res.status(400).send({ error: 'Duplicated name', errCode: 'DUPLICATED' });
+      } else {
+        console.log(err);
+        res.status(400).send('ERROR CREATE LIBRARY');
+      }
     }
   }
 
