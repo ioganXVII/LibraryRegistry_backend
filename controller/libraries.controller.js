@@ -239,7 +239,7 @@ class LibrariesController {
         `, params
       );
 
-      const total = libraries.rows[0].total || 0;
+      const total = (libraries.rows[0] || {}).total || 0;
       const result = await getFormattedArray(libraries.rows) || [];
 
       res.status(200).send({ data: result, total });
