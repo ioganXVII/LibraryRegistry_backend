@@ -2,37 +2,49 @@ const db = require('../database/db');
 const logController = require('./log.controller');
 
 /**
- * Функция приводящая библиотеки к нужному формату
+ * Функция приводящая библиотеки к нужному формату 
+ * 
+ * Получаем версии и зависимости
  * @param {array} arr - список библиотек 
  * @returns {array}
  */
-const getFormattedArray = (arr) => {
-  const result = [];
+const getFormattedArray = async (arr) => {
+  try {
+    const result = await Promise.all(arr.map(async (row) => {
+      const newRow = row;
+      
+      // Получение версий библиотеки
+      const versions = await db.query(
+        `SELECT
+          id,
+          version
+        FROM versions
+        WHERE libraryid = $1
+        ORDER BY id
+        `,
+        [row.id]
+      );
 
-  arr.forEach((lib) => {
-    try {
-      let itemIndex = result.findIndex((item) => item.name === lib.name);
-      
-      if(itemIndex === -1) {
-        result.push({ id: lib.id, name: lib.name, versions: [{ version: lib.version, dependencies: [] }] });
-        itemIndex = result.length - 1;
-      } else {
-        const item = result[itemIndex];
-        const versionIndex = item.versions.findIndex((version) => version.version === lib.version);
-        if(versionIndex === -1) {
-          item.versions.push({ version: lib.version, dependencies: [] });
-        }
-      }
-      
-      if(lib.dependlib && lib.dependversion) {
-        const item = result[itemIndex];
-        const versionIndex = item.versions.findIndex((version) => version.version === lib.version);
-        item.versions[versionIndex].dependencies.push({ name: lib.dependlib, version: lib.dependversion });
-      }
-    } catch(err) {
-      console.log(err);
-    }
-  });
+      // Получение зависимостей версии
+      newRow.versions = await Promise.all(versions.rows.map(async (version) => {
+        const newVersion = version;
+        const { rows } = await db.query(
+          `SELECT 
+            (SELECT name FROM libraries WHERE id = iddependlibrary) as name,
+            (SELECT version FROM versions WHERE id = idversiondependlib) as version
+          FROM dependencies
+          WHERE idlibrary = $1 AND idversionlib = $2
+          `,
+          [row.id, version.id]
+        );
+        newVersion.dependencies = rows;
+        delete newVersion.id;
+        return newVersion;
+      }));
+
+      delete newRow.total;
+      return newRow;
+    }));
 
   // Сортируем версии библиотеки
   result.forEach((item) => item.versions.sort((a, b) => {
@@ -42,6 +54,10 @@ const getFormattedArray = (arr) => {
   }));
 
   return result;
+  } catch (err) {
+    console.log(err);
+    return [];
+  }
 }
 
 class LibrariesController {
@@ -202,30 +218,34 @@ class LibrariesController {
 
   async getLibraries(req, res) {
     try {
-      const { page } = req.query;
+      const { page, getAll } = req.query;
       const offset = page > 1 ? (page - 1) * 10 : 0;
-      const { rows } = await db.query(
+      let offsetQuery =  'OFFSET $1 LIMIT 10';
+      let params = [offset];
+
+      if (getAll === 'true') {
+        offsetQuery = '';
+        params = [];
+      }
+
+      const libraries = await db.query(
         `SELECT
-          lib.id,
+          id,
           name,
-          vers.version,
-          (SELECT name FROM libraries WHERE id = dep.iddependlibrary) as dependlib,
-          (SELECT version FROM versions WHERE id = dep.idversiondependlib) as dependversion,
           (SELECT count(id) FROM libraries) as total
-        FROM libraries as lib
-        JOIN versions as vers ON vers.libraryid = lib.id
-        LEFT JOIN dependencies as dep ON dep.idlibrary = lib.id and dep.idversionlib = vers.id
+        FROM libraries
         ORDER BY id
-        OFFSET $1 LIMIT 10
-        `,
-        [offset],
+        ${offsetQuery}
+        `, params
       );
-      const total = rows[0].total;
-      const result = getFormattedArray(rows);
+
+      const total = libraries.rows[0].total || 0;
+      const result = await getFormattedArray(libraries.rows) || [];
 
       res.status(200).send({ data: result, total });
     } catch(err) {
-      res.status(400).send(err);
+      console.log(err);
+      res.status(400).send('GET LIBRARIES ERROR');
     }
   }
 
@@ -234,23 +254,18 @@ class LibrariesController {
       const { name } = req.params;
       const { rows } = await db.query(
         `SELECT
-          lib.id,
-          name,
-          vers.version,
-          (SELECT name FROM libraries WHERE id = dep.iddependlibrary) as dependlib,
-          (SELECT version FROM versions WHERE id = dep.idversiondependlib) as dependversion
-        FROM libraries as lib
-        JOIN versions as vers ON vers.libraryid = lib.id
-        LEFT JOIN dependencies as dep ON dep.idlibrary = lib.id and dep.idversionlib = vers.id WHERE lib.name = $1
+          id,
+          name
+        FROM libraries WHERE name = $1
         `,
         [name],
       );
-      const result = getFormattedArray(rows);
+      const result = await getFormattedArray(rows);
 
       res.status(200).send(result[0]);
     } catch(err) {
       console.log(err);
-      res.status(400).send(err);
+      res.status(400).send('GET LIBRARY ERROR');
     }
   }
 
@@ -258,10 +273,16 @@ class LibrariesController {
     try {
       const { id } = req.params;
       const { rows } = await db.query('DELETE FROM libraries WHERE id = $1 RETURNING name', [id]);
-      await logController.createLog(`Library ${rows[0].name} was deleted`);
-      res.status(200).send(`${id} was successful deleted!`);
+      if (rows.length > 0) {
+        await logController.createLog(`Library ${rows[0].name} was deleted`);
+        res.status(200).send(`${id} was successful deleted!`);
+      } else {
+        res.status(400).send('INCORRECT LIBRARY ID');
+      }
+
     } catch(err) {
-      res.status(400).send(err);
+      console.log(err);
+      res.status(400).send('DELETE LIBRARY ERROR');
     }
   }
 }
